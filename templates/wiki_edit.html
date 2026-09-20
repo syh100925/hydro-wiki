@@ -1,0 +1,116 @@
+{% import "components/form.html" as form with context %}
+{% extends "layout/basic.html" %}
+{% block content %}
+<style>
+  .wiki-edit__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid var(--hydro-border, rgba(127,127,127,.16)); }
+  .wiki-edit__head h1 { margin: 0; font-size: 22px; }
+  .wiki-edit__path { font-size: 13px; color: var(--hydro-muted, #888); }
+  .wiki-edit__path .tag { display: inline-block; background: var(--hydro-hover, rgba(127,127,127,.08)); border-radius: 5px; padding: 2px 8px; margin-left: 8px; font-family: 'ui-monospace', 'SFMono-Regular', Consolas, monospace; }
+  .wiki-edit__submit { display: flex; align-items: center; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
+  .wiki-edit__submit .hint { font-size: 12.5px; color: var(--hydro-muted, #999); }
+  .wiki-edit__submit .danger { margin-left: auto; color: #d9534f; border-color: rgba(217, 83, 79, .4); }
+  .wiki-edit__submit .danger:hover { background: rgba(217, 83, 79, .08); }
+  .wiki-edit__content textarea { font-family: 'ui-monospace', 'SFMono-Regular', Consolas, monospace; font-size: 13.5px; line-height: 1.6; }
+</style>
+<div class="row">
+  <div class="medium-9 columns">
+    <div class="section">
+      <div class="section__body">
+        <div class="wiki-edit__head">
+          <h1 class="section__title">
+            {% if wdoc %}{{ _('Update a Page') }}{% else %}{{ _('Create a Page') }}{% endif %}
+          </h1>
+          <div class="wiki-edit__path">
+            {{ _('Path') }}: <span class="tag">/{{ path }}</span>
+          </div>
+        </div>
+        <form method="post" id="wiki-edit-form">
+          {% if path %}<input type="hidden" name="oldpath" value="{{ path }}">{% endif %}
+          <div class="row">
+            <div class="medium-8 columns form__item end">
+              <label>
+                {{ _('Path') }}
+                {% if not path %}<span class="supplementary" style="color:#999">({{ _('Wiki Home') }})</span>{% endif %}
+              </label>
+              <input class="textbox" type="text"
+                {% if path %}name="path"{% endif %}
+                value="{{ path }}"
+                placeholder="basic/divide"
+                spellcheck="false"
+                style="font-family: 'ui-monospace', 'SFMono-Regular', Consolas, monospace"
+                data-wiki-path>
+              <p class="help-text">{{ _('Use "/" to organize pages into a tree. The segment "edit" is reserved.') }}</p>
+            </div>
+          </div>
+          {{ form.form_text({ label: _('Title'), name: 'title', value: wdoc.title|default(''), required: true, autofocus: true }) }}
+          <div class="wiki-edit__content">
+            {{ form.form_textarea({
+                  label: _('Content'),
+                  name: 'content',
+                  value: wdoc.content|default(''),
+                  markdown: true,
+                  required: true,
+                  extra_style: 'height: 480px'
+                }) }}
+          </div>
+          <div class="wiki-edit__submit">
+            <button name="operation" value="save" data-default-submit type="submit" class="rounded primary button">
+              {{ _('Save') }} (Ctrl+Enter)
+            </button>
+            <a class="rounded button" href="{{ cancelUrl }}">
+              {{ _('Cancel') }}
+            </a>
+            <span class="hint">{{ _('Markdown') }} · Ctrl+Enter</span>
+            {% if wdoc and path %}
+              <button name="operation" value="delete" type="submit" class="rounded button danger"
+                onclick="if(!confirm('{{ _('Delete this page? All sub-pages will also be deleted.') }}'))return false;">
+                {{ _('Delete') }}
+              </button>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div class="medium-3 columns">
+    {% include 'components/md_hint.html' %}
+  </div>
+</div>
+<script>
+  (function () {
+    const form = document.getElementById('wiki-edit-form');
+    if (!form) return;
+    const p = form.querySelector('input[data-wiki-path]');
+    const old = form.querySelector('input[name=oldpath]');
+    const check = () => {
+      if (!p) return '';
+      const v = p.value.trim();
+      if (!v) {
+        if (old && old.value.trim()) return '不能将子页面移动到首页';
+        return '';
+      }
+      if (v.split('/').some((s) => s === 'edit')) return '"edit" 为保留字';
+      if (!/^[^\s/][^/]*(\/[^\s/][^/]*)*$/.test(v)) return '路径不合法';
+      return '';
+    };
+    if (p) {
+      p.addEventListener('input', () => { p.title = check(); });
+      p.addEventListener('blur', () => { p.value = p.value.trim().replace(/\/+/g, '/').replace(/^\/+|\/+$/g, ''); });
+    }
+    form.addEventListener('submit', (e) => {
+      const bad = check();
+      if (bad) { e.preventDefault(); alert(bad); return; }
+      if (p) {
+        if (p.value.trim()) p.setAttribute('name', 'path');
+        else p.removeAttribute('name');
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        const b = form.querySelector('button[name=operation][value=save]');
+        if (b) b.click();
+      }
+    });
+  })();
+</script>
+{% endblock %}

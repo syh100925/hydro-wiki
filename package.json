@@ -1,0 +1,9 @@
+{
+  "name": "hydro-wiki",
+  "version": "1.0.0",
+  "description": "Site-wide wiki plugin for Hydro. Provides wiki pages with markdown editing, admin-only edit, and a logged-in-only Nav link.",
+  "main": "index.ts",
+  "dependencies": {
+    "hydrooj": "*"
+  }
+}
