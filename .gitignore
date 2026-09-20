@@ -137,5 +137,6 @@ dist
 .pnp.*
 
 
-# Sync probe file (project sync).sync_test
+# Sync probe file (project sync)
+.sync_test
 
