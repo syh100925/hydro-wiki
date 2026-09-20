@@ -109,13 +109,21 @@ function buildTree(docs: WikiShallow[], current: string): WikiTreeNode[] {
         const pp = parentPath(node.path);
         if (!pp) { roots.push(node); return; }
         ensureAncestors(pp);
-        const parent = nodeOf(pp);
-        if (parent) parent.children.push(node);
-        else roots.push(node);
+        let parent = nodeOf(pp);
+        if (!parent) {
+            const segs = pp.split('/');
+            parent = make(segs[segs.length - 1] || pp, pp, false);
+            implicit.set(pp, parent);
+        }
+        parent.children.push(node);
     };
     for (const node of byPath.values()) attach(node);
     for (const node of implicit.values()) attach(node);
-    return roots;
+    const sortTree = (nodes: WikiTreeNode[]) => {
+        nodes.sort((a, b) => (a.path < b.path ? -1 : 1)).forEach((n) => sortTree(n.children));
+        return nodes;
+    };
+    return sortTree(roots);
 }
 
 export class WikiModel {
