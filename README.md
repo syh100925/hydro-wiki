@@ -14,6 +14,18 @@ HydroOJ 全站维基插件，采用 OI-wiki 风格的三栏布局（左侧文档
 - **多语言**：zh / zh_TW / en 完整翻译
 - **统计**：记录浏览量（views）、编辑者（owner / ip）与更新时间（updateAt）
 
+## 运行截图
+
+桌面端：
+
+| 首页（三栏布局 + 文档树） | 多级页面（树形折叠/展开） |
+| ------------------------- | ------------------------- |
+| ![wiki-home](screenshots/wiki-home.png) | ![wiki-nested](screenshots/wiki-nested.png) |
+
+| 编辑页面 | 移动端竖屏（抽屉式目录） |
+| -------- | ----------------------- |
+| ![wiki-edit](screenshots/wiki-edit.png) | ![wiki-mobile-drawer](screenshots/wiki-mobile-drawer.png) |
+
 ## 部署
 
 ```bash
