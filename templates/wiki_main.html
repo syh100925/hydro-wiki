@@ -28,6 +28,12 @@
   .wiki-tree__link { display: block; padding: 4px 8px; border-radius: 6px; font-size: 13.5px; line-height: 1.5; transition: background .12s; }
   .wiki-tree__link:hover { background: var(--hydro-hover, rgba(127,127,127,.08)); }
   .wiki-tree__link.cur { background: color-mix(in srgb, var(--hydro-primary, #4c6ef5) 12%, transparent); }
+  .wiki-tree .wiki-drag { cursor: move; }
+  .wiki-tree .wiki-drag.dragging { opacity: .45; }
+  .wiki-tree__item.drag-before::before { content: ""; display: block; height: 3px; margin: 1px 4px; border-radius: 2px; background: var(--hydro-primary, #4c6ef5); }
+  .wiki-tree__item.drag-after::after { content: ""; display: block; height: 3px; margin: 1px 4px; border-radius: 2px; background: var(--hydro-primary, #4c6ef5); }
+  .wiki-tree__item.drag-into > details, .wiki-tree__item.drag-into > a { outline: 2px solid var(--hydro-primary, #4c6ef5); outline-offset: 1px; border-radius: 7px; }
+  .wiki-tree__group[open] > summary.wiki-drag { background: transparent; }
 
   /* ---------- main article ---------- */
   .wiki-article { flex: 1 1 auto; max-width: 880px; padding: 20px 28px 24px; }
@@ -84,7 +90,7 @@
   }
 </style>
 <div class="wiki-layout">
-  <aside class="wiki-pane wiki-tree">
+  <aside class="wiki-pane wiki-tree" data-wiki-edit="{% if handler.user.hasPriv(PRIV.PRIV_EDIT_SYSTEM) %}1{% else %}0{% endif %}">
     <div class="wiki-tree__head">
       <a href="{{ url('wiki_home') }}">{{ _('Wiki') }}</a>
       <span class="wiki-tree__count">{{ wikiCount }} {{ _('Docs') }}</span>
@@ -92,17 +98,17 @@
     {% macro wikilist(nodes) %}
       <ul class="wiki-tree__items">
         {%- for n in nodes %}
-          <li class="wiki-tree__item">
+          <li class="wiki-tree__item" data-path="{{ n.path }}">
             {%- if n.children|length %}
-              <details class="wiki-tree__group{% if n.active %} active{% endif %}" data-path="{{ n.path }}"{% if n.expanded %} open{% endif %}>
-                <summary>
+              <details class="wiki-tree__group{% if n.active %} active{% endif %}"{% if n.expanded %} open{% endif %}>
+                <summary{% if n.hasDoc %} class="wiki-drag" draggable="true"{% endif %}>
                   {%- if n.hasDoc %}<a href="{{ n.href }}"{% if n.active %} class="cur"{% endif %}>{{ n.title }}</a>
                   {%- else %}<span{% if n.active %} class="cur"{% endif %}>{{ n.title }}</span>{%- endif %}
                 </summary>
                 {{ wikilist(n.children) }}
               </details>
             {%- else %}
-              <a class="wiki-tree__link{% if n.active %} cur{% endif %}" href="{{ n.href }}">{{ n.title }}</a>
+              <a class="wiki-tree__link{% if n.active %} cur{% endif %}{% if n.hasDoc %} wiki-drag{% endif %}" href="{{ n.href }}"{% if n.hasDoc %} draggable="true"{% endif %}>{{ n.title }}</a>
             {%- endif %}
           </li>
         {%- endfor %}
@@ -198,6 +204,63 @@
   </div>
 </div>
 
+<script>
+  (function () {
+    const sidebar = document.querySelector('.wiki-tree');
+    if (!sidebar || sidebar.dataset.wikiEdit !== '1') return;
+    const items = new Map();
+    sidebar.querySelectorAll('.wiki-tree__item').forEach((li) => items.set(li.dataset.path, li));
+    let src = null;
+    let zone = null;
+    const clearDrop = () => sidebar.querySelectorAll('.drag-before,.drag-after,.drag-into').forEach((el) => el.classList.remove('drag-before', 'drag-after', 'drag-into'));
+    const countSub = (p) => { let c = 0; items.forEach((_, k) => { if (k.startsWith(p + '/')) c++; }); return c; };
+    const titleOf = (p) => { const li = items.get(p); if (!li) return p; const a = li.querySelector('a'); return a ? a.textContent : (li.querySelector('summary span, .wiki-tree__link') || {}).textContent || p; };
+    document.addEventListener('dragstart', (e) => {
+      const el = e.target.closest('.wiki-drag');
+      if (!el || !sidebar.contains(el)) return;
+      const li = el.closest('.wiki-tree__item');
+      if (!li || li.dataset.path === '') return;
+      src = li.dataset.path;
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', src); } catch (_) {}
+      el.classList.add('dragging');
+    });
+    document.addEventListener('dragend', () => { src = null; zone = null; clearDrop(); sidebar.querySelectorAll('.wiki-drag').forEach((el) => el.classList.remove('dragging')); });
+    sidebar.addEventListener('dragover', (e) => {
+      if (!src) return;
+      const li = e.target.closest('.wiki-tree__item');
+      if (!li) { clearDrop(); return; }
+      const tgt = li.dataset.path;
+      if (tgt === src || tgt.startsWith(src + '/')) { clearDrop(); return; }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const r = li.getBoundingClientRect();
+      const ratio = (e.clientY - r.top) / r.height;
+      zone = ratio < 0.25 ? 'before' : ratio > 0.75 ? 'after' : 'into';
+      clearDrop();
+      li.classList.add('drag-' + zone);
+    });
+    sidebar.addEventListener('dragleave', (e) => { if (!sidebar.contains(e.relatedTarget)) clearDrop(); });
+    sidebar.addEventListener('drop', (e) => {
+      if (!src) return;
+      e.preventDefault();
+      const li = e.target.closest('.wiki-tree__item');
+      const tgt = li ? li.dataset.path : '';
+      if (!li || tgt === '' || tgt === src || tgt.startsWith(src + '/')) { src = null; zone = null; clearDrop(); return; }
+      const n = countSub(src);
+      const msg = '{{ _('Move "{0}" along with its {1} sub-page(s) to the target position?') }}'
+        .replace('{0}', titleOf(src)).replace('{1}', String(n));
+      if (!window.confirm(msg)) { src = null; zone = null; clearDrop(); return; }
+      const f = document.createElement('form');
+      f.method = 'post';
+      f.action = '/wiki/' + src.split('/').map(encodeURIComponent).join('/') + '/edit';
+      [['operation', 'drag'], ['path', src], ['target', tgt], ['zone', zone]].forEach(([k, v]) => {
+        const i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = v; f.appendChild(i);
+      });
+      document.body.appendChild(f); f.submit();
+    });
+  })();
+</script>
 <script>
   (function () {
     // build the right TOC from rendered headings

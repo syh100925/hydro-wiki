@@ -10,6 +10,7 @@ export interface WikiDoc {
     updateAt: Date;
     views: number;
     owner: number;
+    order?: number;
 }
 
 export interface WikiTreeNode {
@@ -19,10 +20,16 @@ export interface WikiTreeNode {
     hasDoc: boolean;
     active: boolean;
     expanded: boolean;
+    order?: number;
     children: WikiTreeNode[];
 }
 
-type WikiShallow = Pick<WikiDoc, 'path' | 'title'>;
+type WikiShallow = Pick<WikiDoc, 'path' | 'title' | 'order'>;
+
+export const escPath = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const cmpByOrder = (a: WikiShallow, b: WikiShallow) =>
+    ((a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER))
+    || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
 let collection: any = null;
 
@@ -61,6 +68,15 @@ const PageExistError = Err('PageExistError', UserFacingError, function (this: Hy
 const HomeMoveError = Err('HomeMoveError', UserFacingError, function (this: HydroError) {
     return 'The home page cannot be moved.';
 });
+const InvalidMoveError = Err('InvalidMoveError', UserFacingError, function (this: HydroError) {
+    return 'Cannot move a page into itself or its own subtree.';
+});
+const WikiNotFoundError = Err('WikiNotFoundError', UserFacingError, function (this: HydroError) {
+    return 'Wiki page "{0}" does not exist.';
+});
+const InvalidZoneError = Err('InvalidZoneError', UserFacingError, function (this: HydroError) {
+    return 'Invalid drop position.';
+});
 const DeleteHomeError = Err('DeleteHomeError', UserFacingError, function (this: HydroError) {
     return 'The home page cannot be removed.';
 });
@@ -81,18 +97,19 @@ function buildTree(docs: WikiShallow[], current: string): WikiTreeNode[] {
     const implicit = new Map<string, WikiTreeNode>();
     const roots: WikiTreeNode[] = [];
     const isPrefix = (prefix: string) => !!prefix && prefix !== current && (current === prefix || current.startsWith(`${prefix}/`));
-    const make = (title: string, path: string, hasDoc: boolean): WikiTreeNode => ({
+    const make = (title: string, path: string, hasDoc: boolean, order?: number): WikiTreeNode => ({
         title,
         path,
         href: hasDoc ? wikiUrl(path) : '',
         hasDoc,
         active: path === current,
         expanded: (!hasDoc && path === current) || isPrefix(path),
+        order,
         children: [],
     });
     for (const doc of docs) {
         if (byPath.has(doc.path)) continue;
-        byPath.set(doc.path, make(doc.title, doc.path, true));
+        byPath.set(doc.path, make(doc.title, doc.path, true, doc.path === '' ? 0 : doc.order));
     }
     const nodeOf = (p: string) => byPath.get(p) || implicit.get(p);
     const ensureAncestors = (p: string) => {
@@ -120,7 +137,7 @@ function buildTree(docs: WikiShallow[], current: string): WikiTreeNode[] {
     for (const node of byPath.values()) attach(node);
     for (const node of implicit.values()) attach(node);
     const sortTree = (nodes: WikiTreeNode[]) => {
-        nodes.sort((a, b) => (a.path < b.path ? -1 : 1)).forEach((n) => sortTree(n.children));
+        nodes.sort(cmpByOrder).forEach((n) => sortTree(n.children));
         return nodes;
     };
     return sortTree(roots);
@@ -139,11 +156,25 @@ export class WikiModel {
         });
     }
 
+    static async siblingEntries(parent: string): Promise<WikiShallow[]> {
+        const p = normalizePath(parent);
+        const re = p ? new RegExp(`^${escPath(p)}\\/[^/]+$`) : /^[^/]+$/;
+        return await collection.find({ path: re }, { projection: { path: 1, title: 1, order: 1 } }).toArray();
+    }
+
+    static async nextOrder(parent: string): Promise<number> {
+        const top = await this.siblingEntries(parent);
+        top.sort(cmpByOrder);
+        const last = top[top.length - 1];
+        return last ? (last.order ?? 0) + 1 : 0;
+    }
+
     static async add(path: string, title: string, content: string, owner: number, ip?: string) {
         const p = normalizePath(path);
+        const order = await this.nextOrder(parentPath(p));
         await collection.updateOne(
             { path: p },
-            { $set: { title, content, owner, ip }, $setOnInsert: { updateAt: new Date(), views: 0 } },
+            { $set: { title, content, owner, ip, order }, $setOnInsert: { updateAt: new Date(), views: 0 } },
             { upsert: true },
         );
     }
@@ -161,16 +192,92 @@ export class WikiModel {
         await collection.updateOne({ path: normalizePath(path) }, { $inc: { views: 1 } });
     }
 
-    static async rename(from: string, to: string) {
+    static async rename(from: string, to: string): Promise<Map<string, string>> {
         const f = normalizePath(from);
         const t = normalizePath(to);
-        if (!f) return;
-        const fEsc = f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const map = new Map<string, string>();
+        if (!f) return map;
+        const fEsc = escPath(f);
         for (const doc of await collection.find({ path: { $regex: `^${fEsc}(?:\\/.*)?$` } }).toArray()) {
             const rest = doc.path === f ? '' : doc.path.slice(f.length + 1);
             const newPath = rest ? (t ? `${t}/${rest}` : rest) : t;
+            map.set(doc.path, newPath);
             await collection.updateOne({ _id: doc._id }, { $set: { path: newPath } });
         }
+        return map;
+    }
+
+    static async syncLinks(map: Map<string, string>) {
+        if (!map.size) return;
+        const olds = [...map.keys()].sort((a, b) => b.length - a.length);
+        const re = /\/wiki\/(?:%[0-9a-fA-F]{2}|[^\s/?#"'<>()])+/g;
+        for (const doc of await collection.find({}, { projection: { path: 1, content: 1 } }).toArray()) {
+            const src = doc.content;
+            if (!src) continue;
+            let out = '';
+            let last = 0;
+            let n = 0;
+            for (let m; (m = re.exec(src));) {
+                const raw = m[0].slice('/wiki/'.length);
+                let dec: string;
+                try { dec = decodeURIComponent(raw); } catch { continue; }
+                const old = olds.find((o) => dec === o || dec.startsWith(`${o}/`));
+                if (!old) continue;
+                const newPath = dec === old ? map.get(old)! : map.get(old)! + dec.slice(old.length);
+                out += src.slice(last, m.index) + wikiUrl(newPath);
+                last = m.index + m[0].length;
+                n++;
+            }
+            if (n) {
+                out += src.slice(last);
+                await collection.updateOne({ _id: doc._id }, { $set: { content: out } });
+            }
+        }
+    }
+
+    static async move(src: string, tgt: string, zone: 'before' | 'after' | 'into'): Promise<string> {
+        const lastSeg = src.split('/').pop() || src;
+        const newParent = zone === 'into' ? tgt : parentPath(tgt);
+        const newRoot = newParent ? `${newParent}/${lastSeg}` : lastSeg;
+
+        let newSibs = (await this.siblingEntries(newParent)).filter((x) => x.path !== '');
+        const siblingsWithout = newSibs.filter((x) => x.path !== src);
+        let pos: number;
+        if (zone === 'into') {
+            pos = siblingsWithout.length;
+        } else if (tgt === '') {
+            pos = 0;
+        } else {
+            const idx = siblingsWithout.findIndex((x) => x.path === tgt);
+            pos = (idx < 0 ? 0 : idx) + (zone === 'after' ? 1 : 0);
+            pos = Math.min(pos, siblingsWithout.length);
+        }
+        pos = Math.min(pos, siblingsWithout.length);
+        siblingsWithout.splice(pos, 0, { path: newRoot } as WikiShallow);
+
+        const fEsc = escPath(src);
+        const subtree = await collection.find({ path: { $regex: `^${fEsc}(?:\\/.*)?$` } }).toArray();
+        const pathSet = new Set<string>();
+        for (const d of await collection.find({}, { projection: { path: 1 } }).toArray()) pathSet.add(d.path);
+        const oldSet = new Set(subtree.map((d) => d.path));
+        const map = new Map<string, string>();
+        let pathChanged = false;
+        for (const d of subtree) {
+            const rest = d.path === src ? '' : d.path.slice(src.length + 1);
+            const np = rest ? `${newRoot}/${rest}` : newRoot;
+            map.set(d.path, np);
+            if (np !== d.path) pathChanged = true;
+            if (pathSet.has(np) && !oldSet.has(np)) throw new PageExistError(np);
+        }
+
+        if (pathChanged) {
+            for (const d of subtree) await collection.updateOne({ _id: d._id }, { $set: { path: map.get(d.path) } });
+            await this.syncLinks(map);
+        }
+        for (let i = 0; i < siblingsWithout.length; i++) {
+            await collection.updateOne({ path: siblingsWithout[i].path }, { $set: { order: i } });
+        }
+        return newRoot;
     }
 
     static async remove(path: string) {
@@ -181,7 +288,7 @@ export class WikiModel {
     }
 
     static async all(): Promise<WikiShallow[]> {
-        return await collection.find({}, { projection: { path: 1, title: 1 } }).sort({ path: 1 }).toArray();
+        return await collection.find({}, { projection: { path: 1, title: 1, order: 1 } }).sort({ path: 1 }).toArray();
     }
 }
 
@@ -191,20 +298,18 @@ class WikiMainHandler extends Handler {
         const current = normalizePath(path);
         const [docs, wdoc] = await Promise.all([WikiModel.all(), WikiModel.get(current)]);
         if (wdoc) await WikiModel.incViews(current);
-        const flat = docs.filter((d) => d.path !== '').slice().sort((a, b) => (a.path < b.path ? -1 : 1));
-        const flatter: WikiShallow[] = [];
-        for (const d of flat) {
-            const segs = d.path.split('/');
-            let prefix = '';
-            for (let i = 0; i < segs.length - 1; i++) {
-                prefix = prefix ? `${prefix}/${segs[i]}` : segs[i];
-                if (!flatter.find((x) => x.path === prefix)) flatter.push({ path: prefix, title: segs[i] });
+        const tree = buildTree(docs, current);
+        const flatDoc: WikiShallow[] = [];
+        const walk = (nodes: WikiTreeNode[]) => {
+            for (const n of nodes) {
+                if (n.hasDoc) flatDoc.push({ path: n.path, title: n.title, order: n.order });
+                walk(n.children);
             }
-            flatter.push(d);
-        }
-        const idx = flatter.findIndex((d) => d.path === current);
-        const prev = idx > 0 ? flatter[idx - 1] : null;
-        const next = idx >= 0 && idx < flatter.length - 1 ? flatter[idx + 1] : null;
+        };
+        walk(tree);
+        const idx = flatDoc.findIndex((d) => d.path === current);
+        const prev = idx > 0 ? flatDoc[idx - 1] : null;
+        const next = idx >= 0 && idx < flatDoc.length - 1 ? flatDoc[idx + 1] : null;
         const crumbs: Array<{ title: string; href: string; active: boolean }> = [];
         if (current) {
             const segs = current.split('/');
@@ -265,12 +370,30 @@ class WikiEditHandler extends Handler {
             if (old === '' || p === '') throw new HomeMoveError();
             const existing = await WikiModel.get(p);
             if (existing) throw new PageExistError(p);
-            await WikiModel.rename(old, p);
+            const map = await WikiModel.rename(old, p);
+            await WikiModel.syncLinks(map);
         }
         const existed = await WikiModel.get(p);
         if (existed) await WikiModel.update(p, title, content, this.request.ip);
         else await WikiModel.add(p, title, content, this.user._id, this.request.ip);
         this.response.redirect = wikiUrl(p);
+    }
+
+    @param('path', Types.String, true)
+    @param('target', Types.String)
+    @param('zone', Types.String)
+    async postDrag(domainId: string, path?: string, target: string, zone: string) {
+        this.checkPriv(PRIV.PRIV_EDIT_SYSTEM);
+        await this.limitRate('wiki_write', 60, 30);
+        if (zone !== 'before' && zone !== 'after' && zone !== 'into') throw new InvalidZoneError();
+        const src = normalizePath(path);
+        const tgt = normalizePath(target);
+        if (!src) throw new HomeMoveError();
+        if (src === tgt || tgt.startsWith(`${src}/`)) throw new InvalidMoveError();
+        const existed = await WikiModel.get(src);
+        if (!existed) throw new WikiNotFoundError();
+        const newRoot = await WikiModel.move(src, tgt, zone);
+        this.response.redirect = wikiUrl(newRoot);
     }
 }
 
@@ -320,6 +443,12 @@ export async function apply(ctx: Context) {
         'Wiki Home': '首页',
         'Fold the catalog': '折叠目录',
         'Unfold the catalog': '展开目录',
+        'Cannot move a page into itself or its own subtree.': '不能将页面移动到其自身或其子页面中。',
+        'Wiki page "{0}" does not exist.': '维基页面 "{0}" 不存在。',
+        'Move': '移动',
+        'Confirm move': '确认移动',
+        'Invalid drop position.': '无效的放置位置。',
+        'Move "{0}" along with its {1} sub-page(s) to the target position?': '将页面 "{0}"（连同其 {1} 个子页面）移动到目标位置吗？',
     });
     ctx.i18n.load('zh_TW', {
         Wiki: '維基',
@@ -356,6 +485,12 @@ export async function apply(ctx: Context) {
         'Wiki Home': '首頁',
         'Fold the catalog': '摺疊目錄',
         'Unfold the catalog': '展開目錄',
+        'Cannot move a page into itself or its own subtree.': '不能將頁面移動到其自身或其子頁面中。',
+        'Wiki page "{0}" does not exist.': '維基頁面 "{0}" 不存在。',
+        'Move': '移動',
+        'Confirm move': '確認移動',
+        'Invalid drop position.': '無效的放置位置。',
+        'Move "{0}" along with its {1} sub-page(s) to the target position?': '將頁面 "{0}"（連同其 {1} 個子頁面）移動到目標位置嗎？',
     });
     ctx.i18n.load('en', {
         Wiki: 'Wiki',
@@ -377,5 +512,12 @@ export async function apply(ctx: Context) {
         'The home page cannot be removed.': 'The home page cannot be removed.',
         'Use "/" to organize pages into a tree. The segment "edit" is reserved.': 'Use "/" to organize pages into a tree. The segment "edit" is reserved.',
         'Delete this page? All sub-pages will also be deleted.': 'Delete this page? All sub-pages will also be deleted.',
+        'Cannot move a page into itself or its own subtree.': 'Cannot move a page into itself or its own subtree.',
+        'Wiki page "{0}" does not exist.': 'Wiki page "{0}" does not exist.',
+        'Invalid drop position.': 'Invalid drop position.',
+        Move: 'Move',
+        'Confirm move': 'Confirm move',
+        Cancel: 'Cancel',
+        'Move "{0}" along with its {1} sub-page(s) to the target position?': 'Move "{0}" along with its {1} sub-page(s) to the target position?',
     });
 }
