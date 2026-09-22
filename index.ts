@@ -332,6 +332,7 @@ class WikiMainHandler extends Handler {
             next: next ? { title: next.title, href: wikiUrl(next.path) } : null,
             editUrl: wikiEditUrl(current),
             wikiCount: docs.length,
+            page_name: `${wdoc ? wdoc.title : this.translate('Wiki')} - ${this.translate('Wiki')}`,
         };
     }
 }
@@ -342,7 +343,12 @@ class WikiEditHandler extends Handler {
         const current = normalizePath(path);
         const wdoc = await WikiModel.get(current);
         this.response.template = 'wiki_edit.html';
-        this.response.body = { wdoc, path: current, cancelUrl: wikiUrl(current) };
+        this.response.body = {
+            wdoc,
+            path: current,
+            cancelUrl: wikiUrl(current),
+            page_name: `${wdoc ? wdoc.title : this.translate('Wiki')} - ${this.translate('Wiki')}`,
+        };
     }
 
     @param('path', Types.String, true)
@@ -357,12 +363,13 @@ class WikiEditHandler extends Handler {
     }
 
     @param('path', Types.String, true)
+    @param('newpath', Types.String, true)
     @param('title', Types.Title)
     @param('content', Types.Content)
     @param('oldpath', Types.String, true)
-    async postSave(domainId: string, path?: string, title: string, content: string, oldpath?: string) {
+    async postSave(domainId: string, path?: string, newpath?: string, title: string, content: string, oldpath?: string) {
         this.checkPriv(PRIV.PRIV_EDIT_SYSTEM);
-        const p = normalizePath(path);
+        const p = normalizePath(newpath || path);
         validatePath(p);
         await this.limitRate('wiki_write', 60, 30);
         const old = normalizePath(oldpath);

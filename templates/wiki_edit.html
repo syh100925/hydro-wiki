@@ -33,7 +33,7 @@
                 {% if not path %}<span class="supplementary" style="color:#999">({{ _('Wiki Home') }})</span>{% endif %}
               </label>
               <input class="textbox" type="text"
-                {% if path %}name="path"{% endif %}
+                {% if path %}name="newpath"{% endif %}
                 value="{{ path }}"
                 placeholder="basic/divide"
                 spellcheck="false"
@@ -101,7 +101,7 @@
       const bad = check();
       if (bad) { e.preventDefault(); alert(bad); return; }
       if (p) {
-        if (p.value.trim()) p.setAttribute('name', 'path');
+        if (p.value.trim()) p.setAttribute('name', 'newpath');
         else p.removeAttribute('name');
       }
     });

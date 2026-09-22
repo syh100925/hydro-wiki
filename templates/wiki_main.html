@@ -248,7 +248,7 @@
       const tgt = li ? li.dataset.path : '';
       if (!li || tgt === '' || tgt === src || tgt.startsWith(src + '/')) { src = null; zone = null; clearDrop(); return; }
       const n = countSub(src);
-      const msg = '{{ _('Move "{0}" along with its {1} sub-page(s) to the target position?') }}'
+      const msg = '{{ _('Move "{0}" along with its {1} sub-page(s) to the target position?')|safe }}'
         .replace('{0}', titleOf(src)).replace('{1}', String(n));
       if (!window.confirm(msg)) { src = null; zone = null; clearDrop(); return; }
       const f = document.createElement('form');
