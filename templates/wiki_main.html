@@ -56,6 +56,27 @@
   .wiki-empty .wiki-empty__title { font-size: 17px; font-weight: 600; color: var(--hydro-fg, #444); margin-bottom: 6px; }
   .wiki-empty .wiki-empty__action { margin-top: 14px; }
 
+  /* ---------- search ---------- */
+  .wiki-search { position: relative; margin: 0 4px 12px; }
+  .wiki-search input { width: 100%; padding-left: 30px; box-sizing: border-box; }
+  .wiki-search .icon { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--hydro-muted, #999); font-size: 13px; pointer-events: none; }
+  .wiki-search__drop { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 50; background: var(--hydro-card-bg, #fff); border: 1px solid var(--hydro-border, rgba(127,127,127,.2)); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.14); overflow: hidden; display: none; }
+  .wiki-search__drop.open { display: block; }
+  .wiki-search__drop a { display: block; padding: 8px 12px; text-decoration: none; color: inherit; }
+  .wiki-search__drop a:hover, .wiki-search__drop a.focus { background: var(--hydro-hover, rgba(127,127,127,.08)); }
+  .wiki-search__drop .wiki-search__title { font-size: 13.5px; font-weight: 600; color: var(--hydro-fg, #333); }
+  .wiki-search__drop .wiki-search__path { font-size: 11.5px; color: var(--hydro-muted, #999); }
+  .wiki-search__drop .wiki-search__none { padding: 10px 12px; font-size: 13px; color: var(--hydro-muted, #888); }
+  .wiki-search__results { list-style: none; margin: 0; padding: 0; }
+  .wiki-search__results li { margin-bottom: 10px; }
+  .wiki-search__results a { display: block; text-decoration: none; color: inherit; border: 1px solid var(--hydro-border, rgba(127,127,127,.14)); border-radius: 10px; padding: 12px 16px; transition: border-color .15s, box-shadow .15s; }
+  .wiki-search__results a:hover { border-color: var(--hydro-primary, #4c6ef5); box-shadow: 0 3px 12px rgba(127,127,127,.07); }
+  .wiki-search__results .wiki-search__title { font-size: 15px; font-weight: 600; color: var(--hydro-primary, #4c6ef5); }
+  .wiki-search__results .wiki-search__path { font-size: 12px; color: var(--hydro-muted, #999); margin-top: 2px; }
+  .wiki-search__results .wiki-search__snip { font-size: 13px; line-height: 1.7; margin-top: 6px; color: var(--hydro-fg, #555); }
+  .wiki-search__results mark { background: rgba(255, 213, 79, .45); border-radius: 2px; padding: 0 1px; }
+  .wiki-search__count { color: var(--hydro-muted, #888); font-size: 13px; margin: 6px 0 16px; }
+
   /* ---------- prev / next ---------- */
   .wiki-prevnext { display: flex; justify-content: space-between; gap: 16px; margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--hydro-border, rgba(127,127,127,.16)); }
   .wiki-prevnext a { display: block; min-width: 0; background: var(--hydro-card-bg, rgba(127,127,127,.05)); border: 1px solid var(--hydro-border, rgba(127,127,127,.14)); border-radius: 10px; padding: 12px 16px; text-decoration: none; max-width: 48%; transition: border-color .15s, transform .15s, box-shadow .15s; }
@@ -95,6 +116,10 @@
       <a href="{{ url('wiki_home') }}">{{ _('Wiki') }}</a>
       <span class="wiki-tree__count">{{ wikiCount }} {{ _('Docs') }}</span>
     </div>
+    <form class="wiki-search" action="{{ url('wiki_search') }}" method="get" data-wiki-search data-noresult="{{ _('No results for "{0}" found.') }}">
+      <span class="icon icon-search"></span>
+      <input class="textbox" type="search" name="q" value="{{ searchQ or '' }}" placeholder="{{ _('Search') }}…" autocomplete="off">
+    </form>
     {% macro wikilist(nodes) %}
       <ul class="wiki-tree__items">
         {%- for n in nodes %}
@@ -126,7 +151,34 @@
       {%- endfor %}
     </nav>
 
-    {% if wdoc %}
+    {% if searchQ is defined %}
+      <div class="wiki-article__head">
+        <h1>{{ _('Search') }}</h1>
+        <div class="wiki-article__tools">
+          {% if handler.user.hasPriv(PRIV.PRIV_EDIT_SYSTEM) %}
+            <a class="rounded primary button" href="{{ editUrl }}">{{ _('New Page') }}</a>
+          {% endif %}
+        </div>
+      </div>
+      {% if searchResults|length %}
+        <p class="wiki-search__count">{{ searchCount }} {{ _('Results') }}</p>
+        <ul class="wiki-search__results">
+          {% for r in searchResults %}
+            <li>
+              <a href="{{ r.href }}">
+                <div class="wiki-search__title">{{ r.title }}</div>
+                <div class="wiki-search__path">/wiki/{{ r.path }}</div>
+                {% if r.snippet %}<div class="typo wiki-search__snip">{{ r.snippet|safe }}</div>{% endif %}
+              </a>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="typo wiki-empty">
+          <div class="wiki-empty__title">{{ noResultMsg }}</div>
+        </div>
+      {% endif %}
+    {% elif wdoc %}
       <div class="wiki-article__head">
         <h1>{{ wdoc.title }}</h1>
         <div class="wiki-article__tools">
@@ -200,6 +252,10 @@
       <a href="{{ url('wiki_home') }}" onclick="WikiCloseTree()">{{ _('Wiki') }}</a>
       <button class="rounded button" type="button" onclick="WikiCloseTree()">{{ _('Cancel') }}</button>
     </div>
+    <form class="wiki-search" action="{{ url('wiki_search') }}" method="get" data-wiki-search data-noresult="{{ _('No results for "{0}" found.') }}">
+      <span class="icon icon-search"></span>
+      <input class="textbox" type="search" name="q" value="{{ searchQ or '' }}" placeholder="{{ _('Search') }}…" autocomplete="off">
+    </form>
     {{ wikilist(tree) }}
   </div>
 </div>
@@ -302,5 +358,72 @@
   document.addEventListener('click', (e) => {
     if (e.target.id === 'wiki-mobile-tree') WikiCloseTree();
   });
+</script>
+<script>
+  (function () {
+    const forms = document.querySelectorAll('[data-wiki-search]');
+    if (!forms.length) return;
+    const qsUrl = (q) => '/wiki/search?json=1&q=' + encodeURIComponent(q).replace(/%20/g, '+');
+    let timer = null;
+    let seq = 0;
+    const closeAll = () => forms.forEach((f) => { f.querySelector('.wiki-search__drop').classList.remove('open'); });
+    forms.forEach((form) => {
+      const input = form.querySelector('input');
+      const noResultTmpl = form.dataset.noresult || 'No results for "{0}" found.';
+      const drop = document.createElement('div');
+      drop.className = 'wiki-search__drop';
+      form.appendChild(drop);
+      const render = (url, title, path) => {
+        const a = document.createElement('a');
+        a.href = url;
+        const t = document.createElement('div');
+        t.className = 'wiki-search__title';
+        t.textContent = title;
+        const p = document.createElement('div');
+        p.className = 'wiki-search__path';
+        p.textContent = '/wiki/' + (path || '');
+        a.appendChild(t);
+        a.appendChild(p);
+        return a;
+      };
+      const show = (results, q) => {
+        drop.innerHTML = '';
+        if (!results.length) {
+          const d = document.createElement('div');
+          d.className = 'wiki-search__none';
+          d.textContent = noResultTmpl.replace('{0}', q);
+          drop.appendChild(d);
+        } else {
+          results.forEach((r) => drop.appendChild(render(r.href, r.title, r.path)));
+        }
+        drop.classList.add('open');
+      };
+      input.addEventListener('input', () => {
+        clearTimeout(timer);
+        const v = input.value.trim();
+        if (!v) { closeAll(); seq++; return; }
+        const my = ++seq;
+        timer = setTimeout(async () => {
+          try {
+            const res = await fetch(qsUrl(v));
+            if (!res.ok) return;
+            const data = await res.json();
+            if (my !== seq) return;
+            show(data, v);
+          } catch (e) { /* network */ }
+        }, 180);
+      });
+      input.addEventListener('focus', () => { if (input.value.trim() && drop.childNodes.length) drop.classList.add('open'); });
+      form.addEventListener('submit', () => closeAll());
+      drop.addEventListener('mousedown', (e) => { e.preventDefault(); });
+      drop.addEventListener('click', (e) => { const a = e.target.closest('a'); if (a) window.location.href = a.href; });
+    });
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.wiki-search')) closeAll();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeAll();
+    });
+  })();
 </script>
 {% endblock %}

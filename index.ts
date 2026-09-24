@@ -26,10 +26,50 @@ export interface WikiTreeNode {
 
 type WikiShallow = Pick<WikiDoc, 'path' | 'title' | 'order'>;
 
+export interface WikiSearchResult {
+    path: string;
+    title: string;
+    href: string;
+    snippet: string;
+}
+
 export const escPath = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const cmpByOrder = (a: WikiShallow, b: WikiShallow) =>
     ((a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER))
     || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+
+const escapeHtml = (s: string) => s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+function toPlainText(md: string): string {
+    return md
+        .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+        .replace(/`([^`]*)`/g, ' $1 ')
+        .replace(/!\[[^\]]*]\([^)]*\)/g, ' ')
+        .replace(/\[([^\]]*)]\([^)]*\)/g, ' $1 ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[#>*~_|-]+/g, ' ')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\s*\n\s*/g, ' ')
+        .trim();
+}
+
+function makeSnippet(content: string, q: string): string {
+    const text = toPlainText(content);
+    if (!text) return '';
+    const lq = q.toLowerCase();
+    const idx = text.toLowerCase().indexOf(lq);
+    if (idx < 0) return escapeHtml(text.slice(0, 120)) + (text.length > 120 ? '…' : '');
+    const start = Math.max(0, idx - 40);
+    const end = Math.min(text.length, idx + q.length + 60);
+    const pre = (start > 0 ? '…' : '') + escapeHtml(text.slice(start, idx));
+    const hit = `<mark>${escapeHtml(text.slice(idx, idx + q.length))}</mark>`;
+    const post = escapeHtml(text.slice(idx + q.length, end)) + (end < text.length ? '…' : '');
+    return pre + hit + post;
+}
 
 let collection: any = null;
 
@@ -88,7 +128,7 @@ function validatePath(p: string) {
         if (!seg || seg === '.' || seg === '..' || seg.includes('\\') || seg.includes('#')) {
             throw new InvalidPathError();
         }
-        if (seg === 'edit') throw new ReservedSegmentError(seg);
+        if (seg === 'edit' || seg === 'search') throw new ReservedSegmentError(seg);
     }
 }
 
@@ -290,6 +330,36 @@ export class WikiModel {
     static async all(): Promise<WikiShallow[]> {
         return await collection.find({}, { projection: { path: 1, title: 1, order: 1 } }).sort({ path: 1 }).toArray();
     }
+
+    static async search(query: string, limit = 50): Promise<WikiSearchResult[]> {
+        const q = (query || '').trim();
+        if (!q) return [];
+        const re = new RegExp(escPath(q), 'i');
+        const docs = await collection.find(
+            { $or: [{ title: re }, { path: re }, { content: re }] },
+            { projection: { path: 1, title: 1, content: 1 } },
+        ).limit(200).toArray();
+        const lq = q.toLowerCase();
+        const scored = docs.map((d) => {
+            const title = (d.title || '').toLowerCase();
+            const path = (d.path || '').toLowerCase();
+            let score = 0;
+            if (path === lq) score += 1000;
+            if (title.startsWith(lq)) score += 200;
+            if (title.includes(lq)) score += 100;
+            if (path.includes(lq)) score += 50;
+            if ((d.content || '').toLowerCase().includes(lq)) score += 10;
+            return {
+                path: d.path,
+                title: d.title,
+                href: wikiUrl(d.path),
+                snippet: makeSnippet(d.content || '', q),
+                score,
+            };
+        });
+        scored.sort((a, b) => b.score - a.score || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+        return scored.slice(0, limit).map(({ score, ...r }) => r);
+    }
 }
 
 class WikiMainHandler extends Handler {
@@ -333,6 +403,45 @@ class WikiMainHandler extends Handler {
             editUrl: wikiEditUrl(current),
             wikiCount: docs.length,
             page_name: `${wdoc ? wdoc.title : this.translate('Wiki')} - ${this.translate('Wiki')}`,
+        };
+    }
+}
+
+class WikiSearchHandler extends Handler {
+    @param('q', Types.String, true)
+    @param('json', Types.String, true)
+    async get(domainId: string, q?: string, json?: string) {
+        this.checkPriv(PRIV.PRIV_USER_PROFILE);
+        const query = (q || '').trim();
+        if (!query) {
+            if (json) { this.response.body = []; return; }
+            this.response.redirect = wikiUrl('');
+            return;
+        }
+        if (json) {
+            this.response.body = await WikiModel.search(query, 8);
+            return;
+        }
+        const results = await WikiModel.search(query);
+        const docs = await WikiModel.all();
+        this.response.template = 'wiki_main.html';
+        this.response.body = {
+            wdoc: null,
+            tree: buildTree(docs, ''),
+            crumbs: [{ title: 'search', href: wikiUrl('search'), active: true }],
+            prev: null,
+            next: null,
+            editUrl: wikiEditUrl(''),
+            wikiCount: docs.length,
+            searchQ: query,
+            searchResults: query ? results : null,
+            searchCount: results.length,
+            noResultMsg: query
+                ? this.translate('No results for "{0}" found.').replace('{0}', query)
+                : '',
+            page_name: query
+                ? `${this.translate('Search')}: ${query} - ${this.translate('Wiki')}`
+                : `${this.translate('Search')} - ${this.translate('Wiki')}`,
         };
     }
 }
@@ -410,6 +519,7 @@ export async function apply(ctx: Context) {
 
     ctx.Route('wiki_edit_home', '/wiki/edit', WikiEditHandler, PRIV.PRIV_EDIT_SYSTEM);
     ctx.Route('wiki_edit', '/wiki/*path/edit', WikiEditHandler, PRIV.PRIV_EDIT_SYSTEM);
+    ctx.Route('wiki_search', '/wiki/search', WikiSearchHandler, PRIV.PRIV_USER_PROFILE);
     ctx.Route('wiki_home', '/wiki', WikiMainHandler, PRIV.PRIV_USER_PROFILE);
     ctx.Route('wiki_main', '/wiki/*path', WikiMainHandler, PRIV.PRIV_USER_PROFILE);
     ctx.injectUI('Nav', 'wiki_home', { prefix: 'wiki' }, PRIV.PRIV_USER_PROFILE);
@@ -442,16 +552,19 @@ export async function apply(ctx: Context) {
         'Page already exists at path "{0}".': '路径 "{0}" 已存在页面。',
         'The home page cannot be moved.': '首页无法移动。',
         'The home page cannot be removed.': '首页无法删除。',
-        'Use "/" to organize pages into a tree. The segment "edit" is reserved.': '使用 "/" 组织页面的层级结构，路径片段 "edit" 为保留字。',
+        'Use "/" to organize pages into a tree. The segments "edit" and "search" are reserved.': '使用 "/" 组织页面的层级结构，路径片段 "edit" 与 "search" 为保留字。',
+        'No results for "{0}" found.': '未找到与 {0} 相关的结果。',
         'Delete this page? All sub-pages will also be deleted.': '确定删除该页面吗？其所有子页面也会一并删除。',
+        'Cannot move a page into itself or its own subtree.': '不能将页面移动到其自身或其子页面中。',
+        'Wiki page "{0}" does not exist.': '维基页面 "{0}" 不存在。',
         'On this page': '本页目录',
         Home: '首页',
         Docs: '文档',
+        Search: '搜索',
+        Results: '条结果',
         'Wiki Home': '首页',
         'Fold the catalog': '折叠目录',
         'Unfold the catalog': '展开目录',
-        'Cannot move a page into itself or its own subtree.': '不能将页面移动到其自身或其子页面中。',
-        'Wiki page "{0}" does not exist.': '维基页面 "{0}" 不存在。',
         'Move': '移动',
         'Confirm move': '确认移动',
         'Invalid drop position.': '无效的放置位置。',
@@ -484,11 +597,14 @@ export async function apply(ctx: Context) {
         'Page already exists at path "{0}".': '路徑 "{0}" 已存在頁面。',
         'The home page cannot be moved.': '首頁無法移動。',
         'The home page cannot be removed.': '首頁無法刪除。',
-        'Use "/" to organize pages into a tree. The segment "edit" is reserved.': '使用 "/" 組織頁面的階層結構，路徑片段 "edit" 為保留字。',
+        'Use "/" to organize pages into a tree. The segments "edit" and "search" are reserved.': '使用 "/" 組織頁面的階層結構，路徑片段 "edit" 與 "search" 為保留字。',
+        'No results for "{0}" found.': '未找到與 {0} 相關的結果。',
         'Delete this page? All sub-pages will also be deleted.': '確定刪除該頁面嗎？其所有子頁面也會一併刪除。',
         'On this page': '本頁目錄',
         Home: '首頁',
         Docs: '文件',
+        Search: '搜尋',
+        Results: '條結果',
         'Wiki Home': '首頁',
         'Fold the catalog': '摺疊目錄',
         'Unfold the catalog': '展開目錄',
@@ -514,10 +630,13 @@ export async function apply(ctx: Context) {
         'On this page': 'On this page',
         Home: 'Home',
         Docs: 'Docs',
+        Search: 'Search',
+        Results: 'results',
         'Wiki Home': 'Wiki Home',
         'The home page cannot be moved.': 'The home page cannot be moved.',
         'The home page cannot be removed.': 'The home page cannot be removed.',
-        'Use "/" to organize pages into a tree. The segment "edit" is reserved.': 'Use "/" to organize pages into a tree. The segment "edit" is reserved.',
+        'Use "/" to organize pages into a tree. The segments "edit" and "search" are reserved.': 'Use "/" to organize pages into a tree. The segments "edit" and "search" are reserved.',
+        'No results for "{0}" found.': 'No results for {0} found.',
         'Delete this page? All sub-pages will also be deleted.': 'Delete this page? All sub-pages will also be deleted.',
         'Cannot move a page into itself or its own subtree.': 'Cannot move a page into itself or its own subtree.',
         'Wiki page "{0}" does not exist.': 'Wiki page "{0}" does not exist.',
